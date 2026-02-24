@@ -1,7 +1,8 @@
 fastapi
 uvicorn
+pydantic
 pymongo
-streamlit
-requests
 dnspython
 python-dotenv
+streamlit
+requests
