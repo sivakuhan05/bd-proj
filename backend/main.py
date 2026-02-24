@@ -12,17 +12,54 @@ load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 
 
+class AuthorModel(BaseModel):
+    name: str
+    affiliation: str
+
+
+class AuthorUpdateModel(BaseModel):
+    name: Optional[str] = None
+    affiliation: Optional[str] = None
+
+
 class BiasModel(BaseModel):
     label: str = Field(..., examples=["Left", "Right", "Center"])
+    confidence: float
+
+
+class BiasUpdateModel(BaseModel):
+    label: Optional[str] = Field(None, examples=["Left", "Right", "Center"])
+    confidence: Optional[float] = None
+
+
+class EngagementModel(BaseModel):
+    likes: int
+    shares: int
+
+
+class EngagementUpdateModel(BaseModel):
+    likes: Optional[int] = None
+    shares: Optional[int] = None
+
+
+class CommentModel(BaseModel):
+    user: str
+    comment: str
+    likes: int
+    timestamp: str
 
 
 class ArticleBase(BaseModel):
     title: str
     source: str
-    content: str
-    description: Optional[str] = None
-    keywords: List[str] = []
+    author: AuthorModel
+    published_date: str
+    category: str
     bias: BiasModel
+    content: str
+    keywords: List[str] = Field(default_factory=list)
+    engagement: EngagementModel
+    comments: List[CommentModel] = Field(default_factory=list)
 
 
 class ArticleCreate(ArticleBase):
@@ -32,10 +69,14 @@ class ArticleCreate(ArticleBase):
 class ArticleUpdate(BaseModel):
     title: Optional[str] = None
     source: Optional[str] = None
+    author: Optional[AuthorUpdateModel] = None
+    published_date: Optional[str] = None
+    category: Optional[str] = None
+    bias: Optional[BiasUpdateModel] = None
     content: Optional[str] = None
-    description: Optional[str] = None
     keywords: Optional[List[str]] = None
-    bias: Optional[BiasModel] = None
+    engagement: Optional[EngagementUpdateModel] = None
+    comments: Optional[List[CommentModel]] = None
 
 
 def get_collection():
@@ -116,7 +157,7 @@ def update_article(article_id: str, payload: ArticleUpdate):
         client.close()
         raise HTTPException(status_code=400, detail="Invalid article_id")
 
-    update_data = payload.model_dump(exclude_unset=True)
+    update_data = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not update_data:
         client.close()
         raise HTTPException(status_code=400, detail="No fields provided for update")
