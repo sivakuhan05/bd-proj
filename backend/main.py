@@ -111,6 +111,9 @@ def build_query(bias: Optional[str], source: Optional[str], keyword: Optional[st
 
     return query
 
+@app.get("/")
+def root():
+    return {"message": "Political News Bias API is running"}
 
 @app.get("/search")
 def search_articles(
