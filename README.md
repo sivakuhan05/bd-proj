@@ -1,25 +1,26 @@
-# Political News Bias Detector
+# Political News Bias App
 
-A FastAPI + Streamlit project for exploring and managing political news articles stored in MongoDB.
+FastAPI + Streamlit project for manually uploading, classifying, searching, and deleting political news articles in MongoDB.
 
 ## Features
 
-- Filter/query articles by:
-  - bias label (`Left`, `Right`, `Center`)
-  - source/publisher
-  - keyword
-- Full CRUD for articles:
-  - Create new articles
-  - Read/query existing articles
-  - Update article fields
-  - Delete articles
-- Nested article schema support (author, bias confidence, engagement, comments).
+- Manual article upload (text input)
+- Store article classification (`Left`/`Right`/`Center`) with confidence
+- Search by author, publisher, keywords, category, bias, and full-text query
+- Update any already uploaded article by Article ID
+- Delete article by ID
+- Demonstrates MongoDB patterns:
+  - Embedded documents
+  - Array of embedded documents
+  - Document references across collections
+  - Arrays and dictionary/map fields
 
 ## Project Structure
 
-- `backend/main.py` — FastAPI app and MongoDB CRUD/query logic.
-- `frontend/app.py` — Streamlit UI for query + CRUD interactions.
-- `requirements.txt` — Python dependencies.
+- `backend/main.py` - FastAPI API + MongoDB schema/query logic
+- `frontend/app.py` - Streamlit UI for upload/search/delete
+- `requirements.txt` - dependencies
+- `sample_data/` - sample article text and example form inputs
 
 ## Setup
 
@@ -30,76 +31,181 @@ A FastAPI + Streamlit project for exploring and managing political news articles
 pip install -r requirements.txt
 ```
 
-3. Set environment variable for MongoDB connection:
+3. Set MongoDB URI:
 
 ```bash
 export MONGO_URI="your-mongodb-uri"
 ```
 
-(You can also place it in a `.env` file as `MONGO_URI=...`.)
+(Or place `MONGO_URI=...` in `.env`.)
 
-## Run the Backend (FastAPI)
+## Run
+
+Backend:
 
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Backend base URL: `http://localhost:8000`
+Open backend at:
+- `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-## Run the Frontend (Streamlit)
+Frontend:
 
 ```bash
 streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-Frontend URL: `http://localhost:8501`
+Open frontend at:
+- `http://127.0.0.1:8501`
 
-## Swagger / API Docs
+Note:
+- `0.0.0.0` is the bind address for the server process.
+- Use `127.0.0.1` or `localhost` in the browser.
 
-Once the backend is running, open:
+## MongoDB Schema Map
 
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+Database: `data`
 
-That’s where you can see all available APIs and test them directly.
+Collections used:
+- `articles`
+- `authors`
+- `publishers`
 
-## Main API Endpoints
+Relationship map:
 
-- `GET /search` — query endpoint (compatibility route)
-- `GET /articles` — read/query articles with filters
-- `POST /articles` — create article
-- `PUT /articles/{article_id}` — update article
-- `DELETE /articles/{article_id}` — delete article
-
-## Example: Create Payload Shape
-
-```json
-{
-  "title": "Government announces new economic reforms",
-  "source": "National News",
-  "author": {
-    "name": "Jane Doe",
-    "affiliation": "Political Desk"
-  },
-  "published_date": "2025-01-10",
-  "category": "Politics",
-  "bias": {
-    "label": "Left",
-    "confidence": 0.82
-  },
-  "content": "The government announced a new set of economic reforms...",
-  "keywords": ["economy", "reforms", "government", "tax"],
-  "engagement": {
-    "likes": 850,
-    "shares": 230
-  },
-  "comments": [
-    {
-      "user": "Alex",
-      "comment": "These reforms are long overdue.",
-      "likes": 25,
-      "timestamp": "2025-01-10T14:30:00"
-    }
-  ]
-}
+```text
+authors (_id) 1 ----- * articles.author_id
+publishers (_id) 1 -- * articles.publisher_id
 ```
+
+Document structure summary:
+
+1. `authors`
+- `_id` (ObjectId)
+- `author_key` (string, unique)
+- `name` (string)
+- `affiliation` (string|null)
+- `aliases` (array[string])
+- `created_at`, `updated_at` (datetime)
+
+2. `publishers`
+- `_id` (ObjectId)
+- `publisher_key` (string, unique)
+- `name` (string)
+- `website` (string|null)
+- `country` (string|null)
+- `aliases` (array[string])
+- `created_at`, `updated_at` (datetime)
+
+3. `articles`
+- `_id` (ObjectId)
+- `title` (string)
+- `content` (string)
+- `published_date` (string|null)
+- `category` (string|null)
+- `author_id` (ObjectId ref -> `authors._id`)
+- `publisher_id` (ObjectId ref -> `publishers._id`)
+- `classification` (embedded document):
+  - `label` (enum string: `Left` | `Right` | `Center`)
+  - `confidence` (float from `0.0` to `1.0`)
+  - `model_version` (string|null)
+  - `predicted_at` (datetime)
+- `keywords` (array[string], normalized to lowercase/trimmed)
+- `engagement` (embedded document):
+  - `likes` (int)
+  - `shares` (int)
+  - `views` (int)
+- `comments` (array of embedded documents):
+  - each comment has `user` (string), `comment` (string), `likes` (int), `timestamp` (string), `flags` (array[string])
+- `topic_scores` (dict/map string -> float)
+- `created_at`, `updated_at` (datetime)
+
+## Upload + Classify: Input Types and Meaning
+
+In Streamlit tab `Upload + Classify`:
+
+- `Title`: string
+- `Published Date (YYYY-MM-DD)`: string (recommended format `YYYY-MM-DD`)
+- `Category`: string
+- `Author Name`: string (required)
+- `Author Affiliation`: string (optional)
+- `Author Aliases`: comma-separated string -> array of strings
+- `Publisher Name`: string (required)
+- `Publisher Website`: string URL/text (optional)
+- `Publisher Country`: string (optional)
+- `Publisher Aliases`: comma-separated string -> array of strings
+- `Article Content`: string text (required)
+- `Label`: enum (`Left`, `Right`, `Center`)
+- `Confidence`: float in `[0.0, 1.0]`
+- `Model Version`: string
+- `Keywords`: comma-separated string -> array of strings
+- `Topic Scores`: comma-separated `key:value` pairs -> dict of float values
+  - Example: `economy:0.8,health:0.1`
+- `Likes`, `Shares`, `Views`: integers
+- `Comments`: one per line
+  - Format: `user|comment|likes|timestamp|flag1,flag2`
+  - Last flags section is optional
+
+## Search Tab: Input and Query Behavior
+
+Search fields:
+- `Full-text Query` (`q`): string, mapped to MongoDB `$text` search over title/content/keywords
+- `Author`: string, regex match against author `name` or `aliases`
+- `Publisher`: string, regex match against publisher `name` or `aliases`
+- `Keywords`: comma-separated string; normalized values are matched with `$all`
+- `Category`: string exact match
+- `Bias`: enum (`Left`, `Right`, `Center`) exact match on `classification.label`
+- `Limit`: integer `1..200`
+- `Skip`: integer `>= 0` (offset/pagination)
+
+### Does search use limit?
+
+Yes.
+- `GET /articles` uses `limit` (default `100`, max `200`).
+- `GET /search` internally calls `GET /articles` with `limit=50`.
+
+### Does search use sort / aggregate / skip?
+
+- `sort`: Yes, by `created_at` descending (newest first).
+- `aggregate`: Yes, `GET /articles` uses aggregation pipeline with `$match`, `$sort`, `$skip`, `$limit`, and `$lookup`.
+- `skip`: Yes, exposed in API and frontend.
+
+## Update Tab: Input and Behavior
+
+- Input: `Article ID` (required)
+- All other update fields are optional.
+- You can update:
+  - basic fields (`title`, `content`, `published_date`, `category`)
+  - author details (`name`, `affiliation`, `aliases`)
+  - publisher details (`name`, `website`, `country`, `aliases`)
+  - classification (`label`, `confidence`, `model_version`)
+  - `keywords`, `topic_scores`, `engagement`, and full `comments` list
+- API used: `PUT /articles/{article_id}`
+- On success, UI shows `Article updated successfully.`
+
+## Delete Tab: Input and Behavior
+
+- Input: `Article ID` (MongoDB ObjectId string)
+- Action: `DELETE /articles/{article_id}`
+- Effect: deletes article from `articles`
+
+## Existing Old Collection (`news_articles`)
+
+Older prototype may have used `news_articles`.
+Current app writes to `articles`, `authors`, and `publishers`.
+
+Recommendation:
+- Keep old collection as backup first.
+- Test new flow by uploading at least one article.
+- Delete old `news_articles` only after validation if no migration is needed.
+
+## Main Endpoints
+
+- `GET /articles` - search/query articles
+- `GET /search` - compatibility route to `GET /articles` with default limit 50
+- `POST /articles` - create article
+- `PUT /articles/{article_id}` - update article
+- `DELETE /articles/{article_id}` - delete article
