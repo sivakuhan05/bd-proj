@@ -5,7 +5,7 @@ API_BASE_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="Political News Bias App", layout="wide")
 st.title("Political News Bias App")
-st.write("Upload, classify, search, and delete articles stored in MongoDB.")
+st.write("Upload, classify, search, update, and delete articles stored in Neo4j.")
 
 
 def parse_csv_list(raw_value: str):
@@ -83,7 +83,7 @@ def render_article_card(article):
     classification = article.get("classification") or {}
 
     st.markdown(f"### {article.get('title', 'Untitled')}")
-    st.caption(f"ID: {article.get('_id', '')}")
+    st.caption(f"Article ID: {article.get('_id', '')}")
     st.write(
         f"Author: {author.get('name', 'N/A')} | Publisher: {publisher.get('name', 'N/A')}"
     )
@@ -215,7 +215,7 @@ with search_tab:
 
     row1_col1, row1_col2, row1_col3 = st.columns(3)
     with row1_col1:
-        q = st.text_input("Full-text Query", help="Search in title/content.")
+        q = st.text_input("Full-text Query", help="Search in title/content/keywords.")
     with row1_col2:
         author = st.text_input("Author")
     with row1_col3:
@@ -264,7 +264,7 @@ with update_tab:
     st.subheader("Update Existing Article")
 
     with st.form("update_article_form"):
-        article_id = st.text_input("Article ID (required)")
+        article_id = st.text_input("Article ID (UUID, required)")
 
         st.markdown("#### Basic Fields (optional)")
         upd_title = st.text_input("Title")
@@ -418,7 +418,7 @@ with update_tab:
 
 with delete_tab:
     st.subheader("Delete Uploaded Article")
-    article_id = st.text_input("Article ID")
+    article_id = st.text_input("Article ID (UUID)")
 
     if st.button("Delete", key="btn_delete"):
         if not article_id.strip():
