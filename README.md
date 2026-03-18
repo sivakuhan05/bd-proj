@@ -1,6 +1,6 @@
 # Political News Bias App
 
-FastAPI + Streamlit project for manually uploading, classifying, searching, and deleting political news articles in MongoDB.
+FastAPI + Streamlit project for manually uploading, classifying, searching, updating, and deleting political news articles in a Neo4j graph database.
 
 ## Features
 
@@ -8,19 +8,23 @@ FastAPI + Streamlit project for manually uploading, classifying, searching, and 
 - Store article classification (`Left`/`Right`/`Center`) with confidence
 - Search by author, publisher, keywords, category, bias, and full-text query
 - Update any already uploaded article by Article ID
-- Delete article by ID
-- Demonstrates MongoDB patterns:
-  - Embedded documents
-  - Array of embedded documents
-  - Document references across collections
-  - Arrays and dictionary/map fields
+- Delete article by Article ID
+- Demonstrates Neo4j graph patterns:
+  - `(:Author)-[:AUTHORED]->(:Article)`
+  - `(:Article)-[:PUBLISHED_BY]->(:Publisher)`
+  - `(:Article)-[:HAS_KEYWORD]->(:Keyword)`
+  - `(:Article)-[:HAS_TOPIC {score}]->(:Topic)`
+  - `(:Category)-[:IN_CATEGORY]->(:Article)`
+  - `(:Article)-[:HAS_COMMENT]->(:Comment)`
 
 ## Project Structure
 
-- `backend/main.py` - FastAPI API + MongoDB schema/query logic
-- `frontend/app.py` - Streamlit UI for upload/search/delete
+- `backend/main.py` - FastAPI API + Neo4j schema/query logic
+- `frontend/app.py` - Streamlit UI for upload/search/update/delete
 - `requirements.txt` - dependencies
 - `sample_data/` - sample article text and example form inputs
+
+The backend connects to Neo4j Aura over its HTTPS transactional endpoint using `requests`, so no separate Neo4j Python driver is required.
 
 ## Setup
 
@@ -31,13 +35,16 @@ FastAPI + Streamlit project for manually uploading, classifying, searching, and 
 pip install -r requirements.txt
 ```
 
-3. Set MongoDB URI:
+3. Set Neo4j connection variables:
 
 ```bash
-export MONGO_URI="your-mongodb-uri"
+export NEO4J_URI="neo4j+s://<host>"
+export NEO4J_USERNAME="neo4j"
+export NEO4J_PASSWORD="<password>"
+export NEO4J_DATABASE="neo4j"
 ```
 
-(Or place `MONGO_URI=...` in `.env`.)
+(Or place them in `.env`.)
 
 ## Run
 
@@ -65,142 +72,61 @@ Note:
 - `0.0.0.0` is the bind address for the server process.
 - Use `127.0.0.1` or `localhost` in the browser.
 
-## MongoDB Schema Map
+## Neo4j Graph Model
 
-Database: `data`
+Primary nodes:
+- `Article`
+- `Author`
+- `Publisher`
+- `Keyword`
+- `Topic`
+- `Category`
+- `Comment`
 
-Collections used:
-- `articles`
-- `authors`
-- `publishers`
-
-Relationship map:
+Primary relationships:
 
 ```text
-authors (_id) 1 ----- * articles.author_id
-publishers (_id) 1 -- * articles.publisher_id
+(:Author)-[:AUTHORED]->(:Article)
+(:Article)-[:PUBLISHED_BY]->(:Publisher)
+(:Article)-[:HAS_KEYWORD]->(:Keyword)
+(:Article)-[:HAS_TOPIC {score}]->(:Topic)
+(:Category)-[:IN_CATEGORY]->(:Article)
+(:Article)-[:HAS_COMMENT]->(:Comment)
 ```
 
-Document structure summary:
+## Stored Article Properties
 
-1. `authors`
-- `_id` (ObjectId)
-- `author_key` (string, unique)
-- `name` (string)
-- `affiliation` (string|null)
-- `aliases` (array[string])
-- `created_at`, `updated_at` (datetime)
+Each `Article` node stores:
+- `article_id` (UUID string)
+- `title`
+- `content`
+- `published_date`
+- `category`
+- classification fields:
+  - `bias_label`
+  - `bias_confidence`
+  - `bias_model_version`
+  - `bias_predicted_at`
+- `keywords` (normalized lowercase list for API/search compatibility)
+- engagement fields:
+  - `likes`
+  - `shares`
+  - `views`
+- `created_at`
+- `updated_at`
 
-2. `publishers`
-- `_id` (ObjectId)
-- `publisher_key` (string, unique)
-- `name` (string)
-- `website` (string|null)
-- `country` (string|null)
-- `aliases` (array[string])
-- `created_at`, `updated_at` (datetime)
+## Search Behavior
 
-3. `articles`
-- `_id` (ObjectId)
-- `title` (string)
-- `content` (string)
-- `published_date` (string|null)
-- `category` (string|null)
-- `author_id` (ObjectId ref -> `authors._id`)
-- `publisher_id` (ObjectId ref -> `publishers._id`)
-- `classification` (embedded document):
-  - `label` (enum string: `Left` | `Right` | `Center`)
-  - `confidence` (float from `0.0` to `1.0`)
-  - `model_version` (string|null)
-  - `predicted_at` (datetime)
-- `keywords` (array[string], normalized to lowercase/trimmed)
-- `engagement` (embedded document):
-  - `likes` (int)
-  - `shares` (int)
-  - `views` (int)
-- `comments` (array of embedded documents):
-  - each comment has `user` (string), `comment` (string), `likes` (int), `timestamp` (string), `flags` (array[string])
-- `topic_scores` (dict/map string -> float)
-- `created_at`, `updated_at` (datetime)
+`GET /articles` supports:
+- `q` for simple text contains search over title/content/keywords
+- `author` against author name or aliases
+- `publisher` or `source` against publisher name or aliases
+- `keyword` as comma-separated normalized terms that must all be present
+- `category` exact match
+- `bias` exact match
+- `skip` and `limit`
 
-## Upload + Classify: Input Types and Meaning
-
-In Streamlit tab `Upload + Classify`:
-
-- `Title`: string
-- `Published Date (YYYY-MM-DD)`: string (recommended format `YYYY-MM-DD`)
-- `Category`: string
-- `Author Name`: string (required)
-- `Author Affiliation`: string (optional)
-- `Author Aliases`: comma-separated string -> array of strings
-- `Publisher Name`: string (required)
-- `Publisher Website`: string URL/text (optional)
-- `Publisher Country`: string (optional)
-- `Publisher Aliases`: comma-separated string -> array of strings
-- `Article Content`: string text (required)
-- `Label`: enum (`Left`, `Right`, `Center`)
-- `Confidence`: float in `[0.0, 1.0]`
-- `Model Version`: string
-- `Keywords`: comma-separated string -> array of strings
-- `Topic Scores`: comma-separated `key:value` pairs -> dict of float values
-  - Example: `economy:0.8,health:0.1`
-- `Likes`, `Shares`, `Views`: integers
-- `Comments`: one per line
-  - Format: `user|comment|likes|timestamp|flag1,flag2`
-  - Last flags section is optional
-
-## Search Tab: Input and Query Behavior
-
-Search fields:
-- `Full-text Query` (`q`): string, mapped to MongoDB `$text` search over title/content/keywords
-- `Author`: string, regex match against author `name` or `aliases`
-- `Publisher`: string, regex match against publisher `name` or `aliases`
-- `Keywords`: comma-separated string; normalized values are matched with `$all`
-- `Category`: string exact match
-- `Bias`: enum (`Left`, `Right`, `Center`) exact match on `classification.label`
-- `Limit`: integer `1..200`
-- `Skip`: integer `>= 0` (offset/pagination)
-
-### Does search use limit?
-
-Yes.
-- `GET /articles` uses `limit` (default `100`, max `200`).
-- `GET /search` internally calls `GET /articles` with `limit=50`.
-
-### Does search use sort / aggregate / skip?
-
-- `sort`: Yes, by `created_at` descending (newest first).
-- `aggregate`: Yes, `GET /articles` uses aggregation pipeline with `$match`, `$sort`, `$skip`, `$limit`, and `$lookup`.
-- `skip`: Yes, exposed in API and frontend.
-
-## Update Tab: Input and Behavior
-
-- Input: `Article ID` (required)
-- All other update fields are optional.
-- You can update:
-  - basic fields (`title`, `content`, `published_date`, `category`)
-  - author details (`name`, `affiliation`, `aliases`)
-  - publisher details (`name`, `website`, `country`, `aliases`)
-  - classification (`label`, `confidence`, `model_version`)
-  - `keywords`, `topic_scores`, `engagement`, and full `comments` list
-- API used: `PUT /articles/{article_id}`
-- On success, UI shows `Article updated successfully.`
-
-## Delete Tab: Input and Behavior
-
-- Input: `Article ID` (MongoDB ObjectId string)
-- Action: `DELETE /articles/{article_id}`
-- Effect: deletes article from `articles`
-
-## Existing Old Collection (`news_articles`)
-
-Older prototype may have used `news_articles`.
-Current app writes to `articles`, `authors`, and `publishers`.
-
-Recommendation:
-- Keep old collection as backup first.
-- Test new flow by uploading at least one article.
-- Delete old `news_articles` only after validation if no migration is needed.
+Sorting is by `created_at` descending.
 
 ## Main Endpoints
 
@@ -209,3 +135,22 @@ Recommendation:
 - `POST /articles` - create article
 - `PUT /articles/{article_id}` - update article
 - `DELETE /articles/{article_id}` - delete article
+
+## Neo4j Browser Notes
+
+If you want to inspect the graph manually in Neo4j Browser after creating data, these are useful starter queries:
+
+```cypher
+MATCH (n) RETURN n LIMIT 100;
+```
+
+```cypher
+MATCH p=(:Author)-[:AUTHORED]->(:Article)-[:PUBLISHED_BY]->(:Publisher)
+RETURN p LIMIT 50;
+```
+
+```cypher
+MATCH (a:Article)-[r:HAS_TOPIC]->(t:Topic)
+RETURN a.article_id, a.title, t.name, r.score
+ORDER BY a.created_at DESC;
+```
