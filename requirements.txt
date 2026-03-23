@@ -6,3 +6,4 @@ dnspython
 python-dotenv
 streamlit
 requests
+neo4j

@@ -1,26 +1,50 @@
 # Political News Bias App
 
-FastAPI + Streamlit project for manually uploading, classifying, searching, and deleting political news articles in MongoDB.
+FastAPI + Streamlit app for uploading political articles and automatically computing article bias.
 
-## Features
+Current behavior (`ENABLE_ML_MODEL=false`):
+- Final user-facing bias is computed only from the Neo4j knowledge graph.
 
-- Manual article upload (text input)
-- Store article classification (`Left`/`Right`/`Center`) with confidence
-- Search by author, publisher, keywords, category, bias, and full-text query
-- Update any already uploaded article by Article ID
-- Delete article by ID
-- Demonstrates MongoDB patterns:
-  - Embedded documents
-  - Array of embedded documents
-  - Document references across collections
-  - Arrays and dictionary/map fields
+Future behavior (`ENABLE_ML_MODEL=true`):
+- Final user-facing bias is computed as weighted sum of ML score and graph score.
+
+## What The Seed Script Is For
+
+`python -m backend.scripts.seed_neo4j --seed-path sample_data/allsides_seed_template.csv`
+
+This script:
+1. Loads `.env` from project root.
+2. Connects to your Neo4j Aura instance.
+3. Ensures schema constraints exist.
+4. Upserts initial nodes and relationships from CSV (AllSides-derived starter data).
+
+It does not scrape AllSides directly. It loads what is in your CSV file.
+
+## Why Aura May Look Empty In Browser
+
+If script says data was inserted but browser looks empty, usually one of these is true:
+1. You are viewing a different database than `NEO4J_DATABASE`.
+2. Browser graph canvas has no query run yet.
+3. You are connected to another Aura instance/project.
+
+Run this in Neo4j Browser:
+
+```cypher
+SHOW DATABASES;
+MATCH (n) RETURN labels(n) AS labels, count(*) AS cnt ORDER BY cnt DESC;
+MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS cnt ORDER BY cnt DESC;
+```
 
 ## Project Structure
 
-- `backend/main.py` - FastAPI API + MongoDB schema/query logic
-- `frontend/app.py` - Streamlit UI for upload/search/delete
-- `requirements.txt` - dependencies
-- `sample_data/` - sample article text and example form inputs
+- `backend/main.py` - API routes and MongoDB persistence
+- `backend/knowledge_graph.py` - Neo4j scoring, unknown-node learning, hybrid combiner
+- `backend/neo4j_schema.cypher` - constraints and schema notes
+- `backend/scripts/seed_neo4j.py` - seed runner
+- `frontend/app.py` - Streamlit UI
+- `sample_data/allsides_seed_template.csv` - starter AllSides-based seed rows
+- `sample_data/article_sample_known_graph.json` - sample upload payload with metadata already in graph
+- `sample_data/article_sample_partial_graph.json` - sample upload payload with partial known/unknown metadata
 
 ## Setup
 
@@ -31,13 +55,23 @@ FastAPI + Streamlit project for manually uploading, classifying, searching, and 
 pip install -r requirements.txt
 ```
 
-3. Set MongoDB URI:
+3. Configure `.env`:
 
 ```bash
-export MONGO_URI="your-mongodb-uri"
+MONGO_URI=...
+NEO4J_URI=...
+NEO4J_USERNAME=...
+NEO4J_PASSWORD=...
+NEO4J_DATABASE=...
+ENABLE_ML_MODEL=false
+HYBRID_ML_WEIGHT=0.7
+HYBRID_GRAPH_WEIGHT=0.3
+INTERNAL_ML_MODEL_VERSION=internal-lexical-v1
 ```
 
-(Or place `MONGO_URI=...` in `.env`.)
+Notes:
+- Keep `ENABLE_ML_MODEL=false` for graph-only output now.
+- When your real ML model is ready, set `ENABLE_ML_MODEL=true`.
 
 ## Run
 
@@ -47,165 +81,238 @@ Backend:
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open backend at:
-- `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
 Frontend:
 
 ```bash
 streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-Open frontend at:
-- `http://127.0.0.1:8501`
+## Neo4j Schema
 
-Note:
-- `0.0.0.0` is the bind address for the server process.
-- Use `127.0.0.1` or `localhost` in the browser.
+Node labels:
+- `Author`
+- `Publisher`
+- `PublisherHouse`
+- `Organization`
+- `ThinkTank`
+- `Topic`
 
-## MongoDB Schema Map
+Important node properties:
+- `key` (normalized unique key)
+- `name`
+- `bias_label` (`Left`, `Lean Left`, `Center`, `Lean Right`, `Right`)
+- `bias_score` (`-1..1`)
+- `bias_confidence` (`0..1`)
+- `importance_weight`
 
-Database: `data`
+Relationship types used:
+- `WRITES_FOR`
+- `OWNED_BY`
+- `ADVOCATES_FOR`
+- `COVERS`
+- `AFFILIATED_WITH`
 
-Collections used:
-- `articles`
-- `authors`
-- `publishers`
+## AllSides Seed Flow
 
-Relationship map:
+1. Put AllSides-derived values in `sample_data/allsides_seed_template.csv`.
+2. Run:
 
-```text
-authors (_id) 1 ----- * articles.author_id
-publishers (_id) 1 -- * articles.publisher_id
+```bash
+python -m backend.scripts.seed_neo4j --seed-path sample_data/allsides_seed_template.csv
 ```
 
-Document structure summary:
+3. Verify in Neo4j Browser:
 
-1. `authors`
-- `_id` (ObjectId)
-- `author_key` (string, unique)
-- `name` (string)
-- `affiliation` (string|null)
-- `aliases` (array[string])
-- `created_at`, `updated_at` (datetime)
+```cypher
+MATCH (n) RETURN count(n) AS nodes;
+MATCH ()-[r]->() RETURN count(r) AS relationships;
+```
 
-2. `publishers`
-- `_id` (ObjectId)
-- `publisher_key` (string, unique)
-- `name` (string)
-- `website` (string|null)
-- `country` (string|null)
-- `aliases` (array[string])
-- `created_at`, `updated_at` (datetime)
+4. Verify from app UI:
+- Open `Graph Status` tab in Streamlit.
+- Click `Refresh Graph Stats`.
+- This calls `GET /graph/stats` and shows node/relationship counts, inferred node count, and type breakdown.
 
-3. `articles`
-- `_id` (ObjectId)
-- `title` (string)
-- `content` (string)
-- `published_date` (string|null)
-- `category` (string|null)
-- `author_id` (ObjectId ref -> `authors._id`)
-- `publisher_id` (ObjectId ref -> `publishers._id`)
-- `classification` (embedded document):
-  - `label` (enum string: `Left` | `Right` | `Center`)
-  - `confidence` (float from `0.0` to `1.0`)
-  - `model_version` (string|null)
-  - `predicted_at` (datetime)
-- `keywords` (array[string], normalized to lowercase/trimmed)
-- `engagement` (embedded document):
-  - `likes` (int)
-  - `shares` (int)
-  - `views` (int)
-- `comments` (array of embedded documents):
-  - each comment has `user` (string), `comment` (string), `likes` (int), `timestamp` (string), `flags` (array[string])
-- `topic_scores` (dict/map string -> float)
-- `created_at`, `updated_at` (datetime)
+You can also verify by API:
 
-## Upload + Classify: Input Types and Meaning
+```bash
+curl http://localhost:8000/graph/stats
+```
 
-In Streamlit tab `Upload + Classify`:
+## Sample Upload Payloads
 
-- `Title`: string
-- `Published Date (YYYY-MM-DD)`: string (recommended format `YYYY-MM-DD`)
-- `Category`: string
-- `Author Name`: string (required)
-- `Author Affiliation`: string (optional)
-- `Author Aliases`: comma-separated string -> array of strings
-- `Publisher Name`: string (required)
-- `Publisher Website`: string URL/text (optional)
-- `Publisher Country`: string (optional)
-- `Publisher Aliases`: comma-separated string -> array of strings
-- `Article Content`: string text (required)
-- `Label`: enum (`Left`, `Right`, `Center`)
-- `Confidence`: float in `[0.0, 1.0]`
-- `Model Version`: string
-- `Keywords`: comma-separated string -> array of strings
-- `Topic Scores`: comma-separated `key:value` pairs -> dict of float values
-  - Example: `economy:0.8,health:0.1`
-- `Likes`, `Shares`, `Views`: integers
-- `Comments`: one per line
-  - Format: `user|comment|likes|timestamp|flag1,flag2`
-  - Last flags section is optional
+Use these ready payloads:
+- `sample_data/article_sample_known_graph.json` (all major metadata already present in graph)
+- `sample_data/article_sample_partial_graph.json` (mix of known and unknown metadata)
 
-## Search Tab: Input and Query Behavior
+### Comment Input Format In Frontend
 
-Search fields:
-- `Full-text Query` (`q`): string, mapped to MongoDB `$text` search over title/content/keywords
-- `Author`: string, regex match against author `name` or `aliases`
-- `Publisher`: string, regex match against publisher `name` or `aliases`
-- `Keywords`: comma-separated string; normalized values are matched with `$all`
-- `Category`: string exact match
-- `Bias`: enum (`Left`, `Right`, `Center`) exact match on `classification.label`
-- `Limit`: integer `1..200`
-- `Skip`: integer `>= 0` (offset/pagination)
+In Upload/Update forms, `Comments (one per line)` accepts:
+- `user|comment`
+- `user|comment|likes|timestamp`
+- `user|comment|likes|timestamp|flag1,flag2`
 
-### Does search use limit?
+Example:
 
-Yes.
-- `GET /articles` uses `limit` (default `100`, max `200`).
-- `GET /search` internally calls `GET /articles` with `limit=50`.
+```text
+alex|Good summary
+ravi|Need more sources|2|2026-03-23T10:40:00Z
+nina|Clear framing|5|2026-03-23T11:10:00Z|insightful
+```
 
-### Does search use sort / aggregate / skip?
+Example upload command:
 
-- `sort`: Yes, by `created_at` descending (newest first).
-- `aggregate`: Yes, `GET /articles` uses aggregation pipeline with `$match`, `$sort`, `$skip`, `$limit`, and `$lookup`.
-- `skip`: Yes, exposed in API and frontend.
+```bash
+curl -X POST http://localhost:8000/articles \
+  -H "Content-Type: application/json" \
+  -d @sample_data/article_sample_known_graph.json
+```
 
-## Update Tab: Input and Behavior
+## Step-By-Step: How Graph Scoring Works
 
-- Input: `Article ID` (required)
-- All other update fields are optional.
-- You can update:
-  - basic fields (`title`, `content`, `published_date`, `category`)
-  - author details (`name`, `affiliation`, `aliases`)
-  - publisher details (`name`, `website`, `country`, `aliases`)
-  - classification (`label`, `confidence`, `model_version`)
-  - `keywords`, `topic_scores`, `engagement`, and full `comments` list
-- API used: `PUT /articles/{article_id}`
-- On success, UI shows `Article updated successfully.`
+For every uploaded article, backend executes this sequence.
 
-## Delete Tab: Input and Behavior
+### Step 1: Build Candidate Entities
 
-- Input: `Article ID` (MongoDB ObjectId string)
-- Action: `DELETE /articles/{article_id}`
-- Effect: deletes article from `articles`
+From upload metadata, candidate nodes are built for:
+- author
+- publisher
+- publisher house
+- organizations
+- think tanks
+- topics (keywords/category/topic_scores keys)
 
-## Existing Old Collection (`news_articles`)
+### Step 2: Ensure Context Nodes and Links Exist
 
-Older prototype may have used `news_articles`.
-Current app writes to `articles`, `authors`, and `publishers`.
+Before scoring:
+1. Each candidate node is `MERGE`d (created if missing).
+2. Relationship context is `MERGE`d (for example author->publisher, publisher->house, entity->topic links).
 
-Recommendation:
-- Keep old collection as backup first.
-- Test new flow by uploading at least one article.
-- Delete old `news_articles` only after validation if no migration is needed.
+This allows even new/unknown metadata to be connected into graph topology.
 
-## Main Endpoints
+### Step 3: Traverse Relationships For Bias Evidence (Weighted Evidence Propagation)
 
-- `GET /articles` - search/query articles
-- `GET /search` - compatibility route to `GET /articles` with default limit 50
-- `POST /articles` - create article
-- `PUT /articles/{article_id}` - update article
-- `DELETE /articles/{article_id}` - delete article
+For each candidate node:
+1. Use direct node bias if available.
+2. Traverse up to 2 hops to neighbors with bias (`MATCH (n)-[rels*1..2]-(m)`).
+3. Compute contribution per evidence path:
+
+```text
+weighted_contribution = bias_score * base_weight * importance_weight * relationship_weight * hop_decay
+```
+
+4. Aggregate to graph score:
+
+```text
+graph_score = sum(weighted_contribution) / sum(contribution_weight)
+```
+
+Worked example (known metadata):
+- Author node `Ben Shapiro`: `bias_score=+1.0`, `base_weight=0.42`, `importance=1.0`
+- Publisher node `The Daily Wire`: `bias_score=+1.0`, `base_weight=0.23`, `importance=0.95`
+- Related topic node `Tax Policy`: `bias_score=+0.5`, path weight produces contribution weight `0.06`
+
+Contributions:
+- Author contribution: `+1.0 * 0.42 * 1.0 = +0.42`
+- Publisher contribution: `+1.0 * 0.23 * 0.95 = +0.2185`
+- Topic contribution: `+0.5 * 0.06 = +0.03`
+
+Graph score:
+- Numerator `= 0.42 + 0.2185 + 0.03 = 0.6685`
+- Denominator `= 0.42 + 0.2185 + 0.06 = 0.6985`
+- `graph_score = 0.6685 / 0.6985 = 0.957`
+- Label => `Right`
+
+### Step 4: Compute Graph Confidence
+
+Confidence uses:
+- metadata coverage (how much requested metadata found usable evidence)
+- weighted confidence of contributing nodes
+
+### Step 5: Handle Unknown Nodes And Learn
+
+If uploaded nodes were unknown (no stored `bias_score`):
+1. Their bias/confidence is inferred from available evidence and graph result.
+2. Those nodes are updated in Neo4j with inferred `bias_score`, `bias_confidence`, `bias_label`.
+3. They are marked as inferred (`inferred_from_articles=true`) for traceability.
+
+Result: future articles can directly use these learned nodes.
+
+Worked example (partial unknown metadata):
+- Known nodes:
+  - Publisher `CNN` (`Lean Left`)
+  - Topic `Climate Policy` (`Lean Left`)
+- Unknown nodes in upload:
+  - Author `Asha Verma`
+  - Organization `Citizen Data Collective`
+
+What happens:
+1. Unknown nodes are created and linked to known context via relationships.
+2. Graph evidence from known neighbors is aggregated (same weighted formula).
+3. For each unknown node:
+   - If it has evidence paths, inferred score is:
+
+```text
+inferred_score = unknown_weighted_sum / unknown_weight_sum
+```
+
+   - Inferred confidence is:
+
+```text
+inferred_confidence = clamp(0.20 + 0.55 * (confidence_weighted_sum / unknown_weight_sum), 0.15, 0.85)
+```
+
+4. Node is updated with:
+   - `bias_score`
+   - `bias_confidence`
+   - `bias_label`
+   - `inferred_from_articles=true`
+
+So on next article upload, that node is no longer unknown and contributes directly.
+
+## Current Final Output Logic (Graph Only)
+
+With `ENABLE_ML_MODEL=false`:
+- `classification` shown to user comes from graph signal only.
+- UI shows final bias label + confidence from graph pipeline.
+
+## Future Final Output Logic (ML + Graph Sum)
+
+With `ENABLE_ML_MODEL=true`:
+- ML model output and graph output are combined:
+
+```text
+final_score = (w_ml * ml_score) + (w_graph * graph_score)
+```
+
+Default base weights:
+- `w_ml = 0.7`
+- `w_graph = 0.3`
+
+Graph weight is adjusted lower automatically when graph coverage/confidence is weak.
+
+When ML is enabled:
+- Final value shown to user is always the weighted sum of ML and graph scores.
+- If graph quality is weak, graph weight is automatically reduced.
+
+Final label mapping:
+- `score <= -0.2` -> `Left`
+- `score >= 0.2` -> `Right`
+- otherwise -> `Center`
+
+## MongoDB Stored Fields Per Article
+
+Each article stores:
+- `classification` (final user-facing label/confidence)
+- `graph_signal`
+- `ml_signal` (disabled now, active when enabled)
+
+## API Endpoints
+
+- `GET /articles`
+- `GET /search`
+- `GET /graph/stats`
+- `POST /articles`
+- `PUT /articles/{article_id}`
+- `DELETE /articles/{article_id}`
+- `POST /graph/bootstrap`

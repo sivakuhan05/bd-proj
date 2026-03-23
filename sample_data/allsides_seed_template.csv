@@ -1,0 +1,11 @@
+entity_type,name,bias_label,bias_score,bias_confidence,importance_weight,target_type,target_name,relationship_type,relationship_weight,source,source_url
+publisher,Fox News,right,,0.90,0.95,publisher_house,Fox Corporation,OWNED_BY,0.95,allsides.com,https://www.allsides.com/news-source/fox-news-media-bias
+publisher,CNN,lean left,,0.87,0.95,publisher_house,Warner Bros. Discovery,OWNED_BY,0.90,allsides.com,https://www.allsides.com/news-source/cnn-media-bias
+publisher,Associated Press,center,,0.90,0.95,publisher_house,Associated Press,OWNED_BY,0.85,allsides.com,https://www.allsides.com/news-source/associated-press-media-bias
+publisher,Reuters,center,,0.90,0.95,publisher_house,Thomson Reuters,OWNED_BY,0.85,allsides.com,https://www.allsides.com/news-source/reuters-media-bias
+think_tank,The Heritage Foundation,right,,0.83,0.70,topic,Tax Policy,ADVOCATES_FOR,0.72,allsides.com,https://www.allsides.com/news-source/heritage-foundation
+organization,MoveOn,left,,0.80,0.70,topic,Climate Policy,ADVOCATES_FOR,0.68,allsides.com,https://www.allsides.com/news-source/moveon
+author,Ben Shapiro,right,,0.82,1.00,publisher,The Daily Wire,WRITES_FOR,0.90,allsides.com,https://www.allsides.com/news-source/daily-wire
+publisher,The Daily Wire,right,,0.86,0.95,publisher_house,Daily Wire LLC,OWNED_BY,0.88,allsides.com,https://www.allsides.com/news-source/daily-wire
+topic,Tax Policy,lean right,,0.70,0.45,,,,,allsides.com,
+topic,Climate Policy,lean left,,0.70,0.45,,,,,allsides.com,

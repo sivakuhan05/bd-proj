@@ -1,11 +1,14 @@
 import requests
 import streamlit as st
+from datetime import datetime, timezone
 
 API_BASE_URL = "http://localhost:8000"
+UPLOAD_TIMEOUT = (10, 180)
+READ_TIMEOUT = (5, 60)
 
 st.set_page_config(page_title="Political News Bias App", layout="wide")
 st.title("Political News Bias App")
-st.write("Upload, classify, search, and delete articles stored in MongoDB.")
+st.write("Upload, score, search, update, and delete political news articles.")
 
 
 def parse_csv_list(raw_value: str):
@@ -33,15 +36,29 @@ def parse_comments(raw_comments: str):
     if not raw_comments.strip():
         return comments
 
+    now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
     for line in raw_comments.splitlines():
         token = line.strip()
         if not token:
             continue
 
         parts = [part.strip() for part in token.split("|")]
+        if len(parts) == 2:
+            comments.append(
+                {
+                    "user": parts[0],
+                    "comment": parts[1],
+                    "likes": 0,
+                    "timestamp": now_ts,
+                    "flags": [],
+                }
+            )
+            continue
+
         if len(parts) not in (4, 5):
             raise ValueError(
-                "Each comment line must be user|comment|likes|timestamp or include optional |flag1,flag2."
+                "Each comment line must be either user|comment OR user|comment|likes|timestamp with optional |flag1,flag2."
             )
 
         flags = parse_csv_list(parts[4]) if len(parts) == 5 else []
@@ -67,44 +84,65 @@ def parse_optional_int(raw_value: str, field_name: str):
         raise ValueError(f"{field_name} must be an integer.") from exc
 
 
-def parse_optional_float(raw_value: str, field_name: str):
-    token = raw_value.strip()
-    if not token:
-        return None
-    try:
-        return float(token)
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must be a number.") from exc
-
-
 def render_article_card(article):
     author = article.get("author") or {}
     publisher = article.get("publisher") or {}
     classification = article.get("classification") or {}
+    ml_signal = article.get("ml_signal") or {}
+    graph_signal = article.get("graph_signal") or {}
 
     st.markdown(f"### {article.get('title', 'Untitled')}")
     st.caption(f"ID: {article.get('_id', '')}")
     st.write(
-        f"Author: {author.get('name', 'N/A')} | Publisher: {publisher.get('name', 'N/A')}"
+        f"Author: {author.get('name', 'N/A')} | Publisher: {publisher.get('name', 'N/A')} | House: {article.get('publisher_house', 'N/A')}"
     )
+
+    final_label = classification.get("label", "N/A")
+    final_confidence = classification.get("confidence", "N/A")
+    final_score = classification.get("score", "N/A")
     st.write(
-        f"Bias: {classification.get('label', 'N/A')} | Confidence: {classification.get('confidence', 'N/A')}"
+        f"Final Bias: {final_label} | Confidence: {final_confidence} | Score: {final_score}"
     )
+
+    components = classification.get("components") or {}
+    ml_component = components.get("ml") or {}
+    graph_component = components.get("graph") or {}
+
+    if ml_component.get("status") != "disabled":
+        st.write(
+            "ML Signal: "
+            f"{ml_signal.get('label', 'N/A')} (score={ml_signal.get('score', 'N/A')}, confidence={ml_signal.get('confidence', 'N/A')}, weight={ml_component.get('weight', 'N/A')})"
+        )
+    else:
+        st.write("ML Signal: Disabled (graph-only mode)")
+    st.write(
+        "Graph Signal: "
+        f"{graph_signal.get('label', 'N/A')} (score={graph_signal.get('score', 'N/A')}, confidence={graph_signal.get('confidence', 'N/A')}, weight={graph_component.get('weight', 'N/A')}, coverage={graph_signal.get('coverage_ratio', 'N/A')})"
+    )
+
     st.write(
         f"Published: {article.get('published_date', 'N/A')} | Category: {article.get('category', 'N/A')}"
     )
+    st.write(f"Organizations: {', '.join(article.get('organizations', []))}")
+    st.write(f"Think Tanks: {', '.join(article.get('think_tanks', []))}")
     st.write(f"Keywords: {', '.join(article.get('keywords', []))}")
     st.write(article.get("content", ""))
+
+    evidence = graph_signal.get("evidence") or []
+    if evidence:
+        with st.expander("Graph Evidence (Top Matches)"):
+            st.json(evidence[:8])
+
     st.markdown("---")
 
 
-upload_tab, search_tab, update_tab, delete_tab = st.tabs(
-    ["Upload + Classify", "Search", "Update", "Delete"]
+upload_tab, search_tab, update_tab, delete_tab, graph_tab = st.tabs(
+    ["Upload + Score", "Search", "Update", "Delete", "Graph Status"]
 )
 
 with upload_tab:
     st.subheader("Upload Article")
-    st.caption("Manual text upload only.")
+    st.caption("Bias is computed automatically from Knowledge Graph.")
 
     with st.form("upload_article_form"):
         title = st.text_input("Title")
@@ -122,22 +160,16 @@ with upload_tab:
             publisher_country = st.text_input("Publisher Country")
             publisher_aliases = st.text_input("Publisher Aliases (comma-separated)")
 
-        content_manual = st.text_area("Article Content")
+        st.markdown("#### Knowledge Graph Metadata")
+        kg_col1, kg_col2, kg_col3 = st.columns(3)
+        with kg_col1:
+            publisher_house = st.text_input("Publisher House")
+        with kg_col2:
+            organizations = st.text_input("Organizations (comma-separated)")
+        with kg_col3:
+            think_tanks = st.text_input("Think Tanks (comma-separated)")
 
-        st.markdown("#### Classification")
-        class_col1, class_col2, class_col3 = st.columns(3)
-        with class_col1:
-            bias_label = st.selectbox("Label", ["Left", "Right", "Center"])
-        with class_col2:
-            bias_confidence = st.number_input(
-                "Confidence",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.01,
-            )
-        with class_col3:
-            model_version = st.text_input("Model Version", value="prototype-v1")
+        content_manual = st.text_area("Article Content")
 
         st.markdown("#### Search + Enrichment")
         keywords = st.text_input("Keywords (comma-separated)")
@@ -156,7 +188,17 @@ with upload_tab:
             views = st.number_input("Views", min_value=0, value=0, step=1)
         comments_input = st.text_area(
             "Comments (one per line)",
-            help="Format: user|comment|likes|timestamp|flag1,flag2 (flags optional)",
+            help=(
+                "Accepted formats per line:\n"
+                "1) user|comment\n"
+                "2) user|comment|likes|timestamp\n"
+                "3) user|comment|likes|timestamp|flag1,flag2"
+            ),
+            placeholder=(
+                "alex|Good summary\n"
+                "ravi|Need more sources|2|2026-03-23T10:40:00Z\n"
+                "nina|Clear framing|5|2026-03-23T11:10:00Z|insightful"
+            ),
         )
 
         submit_upload = st.form_submit_button("Upload Article")
@@ -187,11 +229,9 @@ with upload_tab:
                         "country": publisher_country or None,
                         "aliases": parse_csv_list(publisher_aliases),
                     },
-                    "classification": {
-                        "label": bias_label,
-                        "confidence": float(bias_confidence),
-                        "model_version": model_version or "prototype-v1",
-                    },
+                    "publisher_house": publisher_house or None,
+                    "organizations": parse_csv_list(organizations),
+                    "think_tanks": parse_csv_list(think_tanks),
                     "keywords": parse_csv_list(keywords),
                     "engagement": {
                         "likes": int(likes),
@@ -202,11 +242,36 @@ with upload_tab:
                     "topic_scores": parse_topic_scores(topic_scores_input),
                 }
 
-                response = requests.post(f"{API_BASE_URL}/articles", json=payload, timeout=15)
-                if response.status_code == 201:
-                    st.success("Article uploaded successfully.")
-                else:
-                    st.error(f"Upload failed: {response.text}")
+                try:
+                    with st.spinner("Uploading article and computing graph bias..."):
+                        response = requests.post(
+                            f"{API_BASE_URL}/articles",
+                            json=payload,
+                            timeout=UPLOAD_TIMEOUT,
+                        )
+                    if response.status_code == 201:
+                        article = response.json()
+                        classification = article.get("classification") or {}
+                        st.success(
+                            "Article uploaded. "
+                            f"Final Bias: {classification.get('label', 'N/A')} "
+                            f"(confidence={classification.get('confidence', 'N/A')})"
+                        )
+                        with st.expander("See full scoring output"):
+                            st.json(
+                                {
+                                    "classification": article.get("classification"),
+                                    "ml_signal": article.get("ml_signal"),
+                                    "graph_signal": article.get("graph_signal"),
+                                }
+                            )
+                    else:
+                        st.error(f"Upload failed: {response.text}")
+                except requests.RequestException as error:
+                    st.error(
+                        "Upload request timed out or failed while waiting for backend scoring. "
+                        f"Details: {error}"
+                    )
         except ValueError as error:
             st.error(f"Invalid input: {error}")
 
@@ -248,20 +313,28 @@ with search_tab:
         if bias:
             params["bias"] = bias
 
-        response = requests.get(f"{API_BASE_URL}/articles", params=params, timeout=15)
-        if response.status_code == 200:
-            articles = response.json()
-            if not articles:
-                st.warning("No articles found.")
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/articles",
+                params=params,
+                timeout=READ_TIMEOUT,
+            )
+            if response.status_code == 200:
+                articles = response.json()
+                if not articles:
+                    st.warning("No articles found.")
+                else:
+                    st.success(f"Found {len(articles)} article(s)")
+                    for article in articles:
+                        render_article_card(article)
             else:
-                st.success(f"Found {len(articles)} article(s)")
-                for article in articles:
-                    render_article_card(article)
-        else:
-            st.error(f"Search failed: {response.text}")
+                st.error(f"Search failed: {response.text}")
+        except requests.RequestException as error:
+            st.error(f"Search request failed: {error}")
 
 with update_tab:
     st.subheader("Update Existing Article")
+    st.caption("Bias is recomputed automatically after updates.")
 
     with st.form("update_article_form"):
         article_id = st.text_input("Article ID (required)")
@@ -271,6 +344,7 @@ with update_tab:
         upd_content = st.text_area("Article Content")
         upd_published_date = st.text_input("Published Date (YYYY-MM-DD)")
         upd_category = st.text_input("Category")
+        upd_source = st.text_input("Source")
 
         st.markdown("#### Author (optional)")
         upd_author_name = st.text_input("Author Name")
@@ -283,10 +357,10 @@ with update_tab:
         upd_publisher_country = st.text_input("Publisher Country")
         upd_publisher_aliases = st.text_input("Publisher Aliases (comma-separated)")
 
-        st.markdown("#### Classification (optional)")
-        upd_bias_label = st.selectbox("Label", ["", "Left", "Right", "Center"], key="upd_bias")
-        upd_bias_confidence = st.text_input("Confidence (0.0 - 1.0)")
-        upd_model_version = st.text_input("Model Version")
+        st.markdown("#### Knowledge Graph Metadata (optional)")
+        upd_publisher_house = st.text_input("Publisher House")
+        upd_organizations = st.text_input("Organizations (comma-separated)")
+        upd_think_tanks = st.text_input("Think Tanks (comma-separated)")
 
         st.markdown("#### Keywords / Topic Scores (optional)")
         upd_keywords = st.text_input("Keywords (comma-separated)")
@@ -302,7 +376,17 @@ with update_tab:
 
         upd_comments = st.text_area(
             "Replace Comments (one per line)",
-            help="Format: user|comment|likes|timestamp|flag1,flag2 (flags optional)",
+            help=(
+                "Accepted formats per line:\n"
+                "1) user|comment\n"
+                "2) user|comment|likes|timestamp\n"
+                "3) user|comment|likes|timestamp|flag1,flag2"
+            ),
+            placeholder=(
+                "alex|Good summary\n"
+                "ravi|Need more sources|2|2026-03-23T10:40:00Z\n"
+                "nina|Clear framing|5|2026-03-23T11:10:00Z|insightful"
+            ),
         )
 
         submit_update = st.form_submit_button("Update Article")
@@ -322,6 +406,8 @@ with update_tab:
                     payload["published_date"] = upd_published_date.strip()
                 if upd_category.strip():
                     payload["category"] = upd_category.strip()
+                if upd_source.strip():
+                    payload["source"] = upd_source.strip()
 
                 author_requested = any(
                     [
@@ -366,18 +452,12 @@ with update_tab:
                             payload["publisher"] = publisher_payload
 
                 if payload is not None:
-                    classification_payload = {}
-                    if upd_bias_label:
-                        classification_payload["label"] = upd_bias_label
-                    conf_value = parse_optional_float(upd_bias_confidence, "Confidence")
-                    if conf_value is not None:
-                        if conf_value < 0.0 or conf_value > 1.0:
-                            raise ValueError("Confidence must be between 0.0 and 1.0.")
-                        classification_payload["confidence"] = conf_value
-                    if upd_model_version.strip():
-                        classification_payload["model_version"] = upd_model_version.strip()
-                    if classification_payload:
-                        payload["classification"] = classification_payload
+                    if upd_publisher_house.strip():
+                        payload["publisher_house"] = upd_publisher_house.strip()
+                    if upd_organizations.strip():
+                        payload["organizations"] = parse_csv_list(upd_organizations)
+                    if upd_think_tanks.strip():
+                        payload["think_tanks"] = parse_csv_list(upd_think_tanks)
 
                     if upd_keywords.strip():
                         payload["keywords"] = parse_csv_list(upd_keywords)
@@ -404,15 +484,25 @@ with update_tab:
                     if not payload:
                         st.error("Provide at least one field to update.")
                     else:
-                        response = requests.put(
-                            f"{API_BASE_URL}/articles/{article_id.strip()}",
-                            json=payload,
-                            timeout=15,
-                        )
-                        if response.status_code == 200:
-                            st.success("Article updated successfully.")
-                        else:
-                            st.error(f"Update failed: {response.text}")
+                        try:
+                            with st.spinner("Updating article and recomputing graph bias..."):
+                                response = requests.put(
+                                    f"{API_BASE_URL}/articles/{article_id.strip()}",
+                                    json=payload,
+                                    timeout=UPLOAD_TIMEOUT,
+                                )
+                            if response.status_code == 200:
+                                updated = response.json()
+                                classification = updated.get("classification") or {}
+                                st.success(
+                                    "Article updated. "
+                                    f"New Final Bias: {classification.get('label', 'N/A')} "
+                                    f"(confidence={classification.get('confidence', 'N/A')})"
+                                )
+                            else:
+                                st.error(f"Update failed: {response.text}")
+                        except requests.RequestException as error:
+                            st.error(f"Update request failed: {error}")
         except ValueError as error:
             st.error(f"Invalid input: {error}")
 
@@ -424,9 +514,64 @@ with delete_tab:
         if not article_id.strip():
             st.error("Article ID is required.")
         else:
-            response = requests.delete(f"{API_BASE_URL}/articles/{article_id.strip()}", timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                st.success(data.get("message", "Article deleted"))
+            try:
+                response = requests.delete(
+                    f"{API_BASE_URL}/articles/{article_id.strip()}",
+                    timeout=READ_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    st.success(data.get("message", "Article deleted"))
+                else:
+                    st.error(f"Delete failed: {response.text}")
+            except requests.RequestException as error:
+                st.error(f"Delete request failed: {error}")
+
+with graph_tab:
+    st.subheader("Neo4j Graph Status")
+    st.caption("Use this panel to verify graph data directly from the app.")
+    refresh_graph = st.button("Refresh Graph Stats", key="btn_graph_stats")
+
+    if "graph_stats_payload" not in st.session_state:
+        st.session_state["graph_stats_payload"] = None
+    if "graph_stats_error" not in st.session_state:
+        st.session_state["graph_stats_error"] = None
+
+    if refresh_graph or st.session_state["graph_stats_payload"] is None:
+        try:
+            with st.spinner("Loading graph stats..."):
+                response = requests.get(f"{API_BASE_URL}/graph/stats", timeout=READ_TIMEOUT)
+            if response.status_code != 200:
+                st.session_state["graph_stats_payload"] = None
+                st.session_state["graph_stats_error"] = f"Failed to load graph stats: {response.text}"
             else:
-                st.error(f"Delete failed: {response.text}")
+                st.session_state["graph_stats_payload"] = response.json()
+                st.session_state["graph_stats_error"] = None
+        except requests.RequestException as error:
+            st.session_state["graph_stats_payload"] = None
+            st.session_state["graph_stats_error"] = f"Graph stats request failed: {error}"
+
+    if st.session_state["graph_stats_error"]:
+        st.error(st.session_state["graph_stats_error"])
+    elif st.session_state["graph_stats_payload"]:
+        payload = st.session_state["graph_stats_payload"]
+        stats = payload.get("stats") or {}
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        with metric_col1:
+            st.metric("Database", payload.get("database", "N/A"))
+        with metric_col2:
+            st.metric("Nodes", stats.get("node_count", 0))
+        with metric_col3:
+            st.metric("Relationships", stats.get("relationship_count", 0))
+        with metric_col4:
+            st.metric("Inferred Nodes", stats.get("inferred_node_count", 0))
+
+        st.markdown("#### Node Types")
+        st.json(stats.get("node_types", []))
+
+        st.markdown("#### Relationship Types")
+        st.json(stats.get("relationship_types", []))
+
+        st.markdown("#### Raw Stats Payload")
+        st.json(payload)

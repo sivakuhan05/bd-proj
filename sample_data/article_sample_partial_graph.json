@@ -1,0 +1,51 @@
+{
+  "title": "Coalition Proposes Climate Budget Revisions Ahead Of Committee Vote",
+  "content": "Policy advocates proposed a revised climate budget with expanded welfare support and infrastructure spending. The proposal also included tax adjustments and emissions benchmarks.",
+  "published_date": "2026-03-23",
+  "category": "Policy",
+  "author": {
+    "name": "Asha Verma",
+    "affiliation": "Civic Desk",
+    "aliases": [
+      "A. Verma"
+    ]
+  },
+  "publisher": {
+    "name": "CNN",
+    "website": "https://www.cnn.com",
+    "country": "USA",
+    "aliases": []
+  },
+  "publisher_house": "Warner Bros. Discovery",
+  "organizations": [
+    "MoveOn",
+    "Citizen Data Collective"
+  ],
+  "think_tanks": [
+    "The Heritage Foundation",
+    "Open Policy Group"
+  ],
+  "keywords": [
+    "Climate Policy",
+    "Tax Policy",
+    "Welfare"
+  ],
+  "topic_scores": {
+    "Climate Policy": 0.88,
+    "Tax Policy": 0.62
+  },
+  "engagement": {
+    "likes": 140,
+    "shares": 31,
+    "views": 2810
+  },
+  "comments": [
+    {
+      "user": "publicwatch",
+      "comment": "Interesting overlap of climate and tax framing.",
+      "likes": 4,
+      "timestamp": "2026-03-23T11:05:00Z",
+      "flags": []
+    }
+  ]
+}
