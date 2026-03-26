@@ -64,6 +64,7 @@ NEO4J_USERNAME=...
 NEO4J_PASSWORD=...
 NEO4J_DATABASE=...
 ENABLE_ML_MODEL=false
+ENABLE_SPARK_ML=true
 HYBRID_ML_WEIGHT=0.7
 HYBRID_GRAPH_WEIGHT=0.3
 INTERNAL_ML_MODEL_VERSION=internal-lexical-v1
@@ -72,6 +73,8 @@ INTERNAL_ML_MODEL_VERSION=internal-lexical-v1
 Notes:
 - Keep `ENABLE_ML_MODEL=false` for graph-only output now.
 - When your real ML model is ready, set `ENABLE_ML_MODEL=true`.
+- `ENABLE_SPARK_ML=true` lets the ML signal use a local Spark session when ML mode is enabled.
+- If Spark is unavailable at runtime, the backend falls back to the existing lexical scorer automatically.
 
 ## Run
 
@@ -86,6 +89,28 @@ Frontend:
 ```bash
 streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501
 ```
+
+## Spark Analytics Demo
+
+To demonstrate Spark without changing the app workflow, run the standalone analytics job after you have uploaded a few articles.
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the Spark job:
+
+```bash
+python3 -m backend.spark_jobs.article_analytics --limit 1000 --save-source-json
+```
+
+What it does:
+- Reads article data from the existing MongoDB collections.
+- Builds a Spark DataFrame from the stored articles.
+- Prints analytics such as publisher counts, category counts, bias distribution, average engagement, and top keywords.
+- Writes CSV reports under `sample_data/spark_reports/`.
 
 ## Neo4j Schema
 

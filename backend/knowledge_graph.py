@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.bias_terms import LEFT_LEAN_TERMS, RIGHT_LEAN_TERMS
+from backend.bias_utils import clamp, score_to_three_class_label, utc_now
 from dotenv import load_dotenv
+
+try:
+    from backend.spark_jobs.bias_batch import SparkBiasAnalyzer
+except Exception:  # pragma: no cover - keep core scorer importable without Spark extras
+    SparkBiasAnalyzer = None
 
 try:
     from neo4j import GraphDatabase
@@ -68,36 +75,6 @@ GRAPH_SCHEMA_QUERIES = [
     "CREATE CONSTRAINT think_tank_key IF NOT EXISTS FOR (n:ThinkTank) REQUIRE n.key IS UNIQUE",
     "CREATE CONSTRAINT topic_key IF NOT EXISTS FOR (n:Topic) REQUIRE n.key IS UNIQUE",
 ]
-
-LEFT_LEAN_TERMS = {
-    "progressive",
-    "equity",
-    "social justice",
-    "climate justice",
-    "welfare",
-    "union",
-    "public healthcare",
-    "gun control",
-    "racial justice",
-}
-
-RIGHT_LEAN_TERMS = {
-    "conservative",
-    "traditional values",
-    "border security",
-    "tax cuts",
-    "free market",
-    "gun rights",
-    "deregulation",
-    "national sovereignty",
-    "law and order",
-}
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def normalize_text(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
@@ -130,25 +107,11 @@ def parse_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     except ValueError:
         return default
 
-
-def clamp(value: float, min_value: float, max_value: float) -> float:
-    return max(min_value, min(max_value, value))
-
-
 def bias_label_to_score(label: Optional[str]) -> Optional[float]:
     if not label:
         return None
     normalized = normalize_text(label.replace("_", " "))
     return ALLSIDES_LABEL_TO_SCORE.get(normalized)
-
-
-def score_to_three_class_label(score: float) -> str:
-    if score <= -0.2:
-        return "Left"
-    if score >= 0.2:
-        return "Right"
-    return "Center"
-
 
 def score_to_allsides_label(score: float) -> str:
     if score <= -0.75:
@@ -200,8 +163,12 @@ class KnowledgeGraphScorer:
             self.graph_weight = self.graph_weight / total
 
         self.ml_model_version = os.getenv("INTERNAL_ML_MODEL_VERSION", "internal-lexical-v1")
+        self.enable_spark_ml = (
+            os.getenv("ENABLE_SPARK_ML", "true").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self._driver = None
         self._schema_ready = False
+        self._spark_bias_analyzer = SparkBiasAnalyzer() if SparkBiasAnalyzer is not None else None
 
     @staticmethod
     def _read_weight(env_name: str, fallback: float) -> float:
@@ -300,6 +267,46 @@ class KnowledgeGraphScorer:
             self._driver = None
             self._schema_ready = False
             self._active_database = None
+        if self._spark_bias_analyzer is not None:
+            self._spark_bias_analyzer.close()
+
+    def _estimate_lexical_ml_signal(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        content = str(metadata.get("content", ""))
+        category = str(metadata.get("category", ""))
+        keywords = [str(item) for item in metadata.get("keywords", [])]
+        text = " ".join([content, category, " ".join(keywords)]).lower()
+
+        left_hits = 0
+        right_hits = 0
+
+        for term in LEFT_LEAN_TERMS:
+            if term in text:
+                left_hits += text.count(term)
+        for term in RIGHT_LEAN_TERMS:
+            if term in text:
+                right_hits += text.count(term)
+
+        total_hits = left_hits + right_hits
+        score = 0.0
+        if total_hits > 0:
+            score = (right_hits - left_hits) / float(total_hits)
+        score = clamp(score, -1.0, 1.0)
+
+        confidence = clamp(0.45 + (0.35 * abs(score)) + min(total_hits * 0.03, 0.2), 0.35, 0.92)
+
+        return {
+            "label": score_to_three_class_label(score),
+            "score": round(score, 6),
+            "confidence": round(confidence, 6),
+            "model_version": self.ml_model_version,
+            "predicted_at": utc_now(),
+            "diagnostics": {
+                "engine": "lexical",
+                "left_hits": left_hits,
+                "right_hits": right_hits,
+                "total_hits": total_hits,
+            },
+        }
 
     def ensure_schema(self):
         if self._schema_ready:
@@ -1094,41 +1101,17 @@ class KnowledgeGraphScorer:
         }
 
     def estimate_ml_signal(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        content = str(metadata.get("content", ""))
-        category = str(metadata.get("category", ""))
-        keywords = [str(item) for item in metadata.get("keywords", [])]
-        text = " ".join([content, category, " ".join(keywords)]).lower()
+        if self.enable_spark_ml and self._spark_bias_analyzer is not None:
+            try:
+                return self._spark_bias_analyzer.score_article(metadata, self.ml_model_version)
+            except Exception as exc:
+                fallback = self._estimate_lexical_ml_signal(metadata)
+                fallback["diagnostics"]["spark_fallback_reason"] = (
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+                return fallback
 
-        left_hits = 0
-        right_hits = 0
-
-        for term in LEFT_LEAN_TERMS:
-            if term in text:
-                left_hits += text.count(term)
-        for term in RIGHT_LEAN_TERMS:
-            if term in text:
-                right_hits += text.count(term)
-
-        total_hits = left_hits + right_hits
-        score = 0.0
-        if total_hits > 0:
-            score = (right_hits - left_hits) / float(total_hits)
-        score = clamp(score, -1.0, 1.0)
-
-        confidence = clamp(0.45 + (0.35 * abs(score)) + min(total_hits * 0.03, 0.2), 0.35, 0.92)
-
-        return {
-            "label": score_to_three_class_label(score),
-            "score": round(score, 6),
-            "confidence": round(confidence, 6),
-            "model_version": self.ml_model_version,
-            "predicted_at": utc_now(),
-            "diagnostics": {
-                "left_hits": left_hits,
-                "right_hits": right_hits,
-                "total_hits": total_hits,
-            },
-        }
+        return self._estimate_lexical_ml_signal(metadata)
 
     def combine_signals(self, ml_signal: Dict[str, Any], graph_signal: Dict[str, Any]) -> Dict[str, Any]:
         ml_score = parse_float(ml_signal.get("score"), 0.0) or 0.0

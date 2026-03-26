@@ -7,3 +7,4 @@ venv/
 # Secrets
 .env
 
+sample_data/spark_reports/
