@@ -1,6 +1,6 @@
-# Upload + Classify Inputs (Modified Schema)
+# Upload + Score Inputs (Hybrid ML + Knowledge Graph)
 
-Use these values in the current `Upload + Classify` form.
+Use these values in the current `Upload + Score` form.
 
 ## Basic
 
@@ -21,16 +21,16 @@ Use these values in the current `Upload + Classify` form.
 - `Publisher Country`: `USA`
 - `Publisher Aliases (comma-separated)`: `MPL, Metro Ledger`
 
+## Knowledge Graph Metadata
+
+- `Publisher House`: `Civic Media Network`
+- `Organizations (comma-separated)`: `Urban Mobility Forum, Public Transit Coalition`
+- `Think Tanks (comma-separated)`: `Policy Horizon Lab`
+
 ## Content
 
 - `Article Content`:
   - Example: `The city council approved a revised transit and emissions package...`
-
-## Classification
-
-- `Label`: `Center`
-- `Confidence`: `0.81`
-- `Model Version`: `prototype-v1`
 
 ## Keywords and Topic Scores
 
@@ -49,10 +49,12 @@ Arun V|Would like cost breakdown details.|4|2026-02-24T10:26:00Z|question
 Sam T|Balanced reporting, helpful context.|8|2026-02-24T11:03:00Z
 ```
 
-## Notes About Modified Fields
+## Notes
 
-- File upload is removed (manual text only).
-- `Search Meta` is removed.
-- `Publisher metadata` is removed.
-- `Author social_profiles` is removed.
-- `Keywords` are normalized in backend (trimmed + lowercase) before storage.
+- Users no longer provide ML classification (`label`, `confidence`, `model_version`).
+- Backend computes:
+  - `graph_signal`
+  - final `classification` (`Left`/`Right`/`Center`) with confidence.
+- Current default mode is graph-only (`ENABLE_ML_MODEL=false`).
+- If some metadata is unknown in the graph, scoring still works using known graph nodes and relationship evidence.
+- Unknown nodes are saved back with inferred bias/confidence for future queries.

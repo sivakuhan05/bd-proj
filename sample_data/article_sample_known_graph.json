@@ -1,0 +1,50 @@
+{
+  "title": "Tax Reform Debate Intensifies As Lawmakers Push Market-Focused Amendments",
+  "content": "Lawmakers continued negotiations on tax policy, arguing that lower corporate taxes and deregulation would improve growth. Supporters emphasized free market priorities and fiscal restraint.",
+  "published_date": "2026-03-23",
+  "category": "Politics",
+  "author": {
+    "name": "Ben Shapiro",
+    "affiliation": "The Daily Wire",
+    "aliases": [
+      "Benjamin Shapiro"
+    ]
+  },
+  "publisher": {
+    "name": "The Daily Wire",
+    "website": "https://www.dailywire.com",
+    "country": "USA",
+    "aliases": [
+      "Daily Wire"
+    ]
+  },
+  "publisher_house": "Daily Wire LLC",
+  "organizations": [],
+  "think_tanks": [
+    "The Heritage Foundation"
+  ],
+  "keywords": [
+    "Tax Policy",
+    "Immigration",
+    "Border Security",
+    "Free Market"
+  ],
+  "topic_scores": {
+    "Tax Policy": 0.91,
+    "Immigration": 0.73
+  },
+  "engagement": {
+    "likes": 240,
+    "shares": 67,
+    "views": 5200
+  },
+  "comments": [
+    {
+      "user": "policy_reader",
+      "comment": "Detailed take on market policy priorities.",
+      "likes": 6,
+      "timestamp": "2026-03-23T10:12:00Z",
+      "flags": []
+    }
+  ]
+}

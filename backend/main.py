@@ -8,24 +8,28 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import ASCENDING, MongoClient, ReturnDocument, TEXT
 
+from backend.knowledge_graph import KnowledgeGraphScorer, normalize_text, unique_non_empty
+
 app = FastAPI(title="Political News Bias API")
 
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 _INDEXES_READY = False
 
+kg_scorer = KnowledgeGraphScorer()
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def normalize_text(value: str) -> str:
-    return " ".join(value.strip().lower().split())
-
-
 def normalize_keywords(keywords: List[str]) -> List[str]:
     cleaned = {normalize_text(keyword) for keyword in keywords if keyword.strip()}
     return sorted(cleaned)
+
+
+def normalize_list(values: List[str]) -> List[str]:
+    return unique_non_empty([item.strip() for item in values if item and item.strip()])
 
 
 def to_jsonable(value: Any) -> Any:
@@ -71,15 +75,8 @@ class ClassificationModel(BaseModel):
 
     label: str = Field(..., examples=["Left", "Right", "Center"])
     confidence: float = Field(..., ge=0.0, le=1.0)
-    model_version: Optional[str] = "prototype-v1"
-
-
-class ClassificationUpdateModel(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
-
-    label: Optional[str] = Field(None, examples=["Left", "Right", "Center"])
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    model_version: Optional[str] = None
+    score: Optional[float] = Field(None, ge=-1.0, le=1.0)
+    model_version: Optional[str] = "hybrid-ml-graph-v1"
 
 
 class EngagementModel(BaseModel):
@@ -110,8 +107,9 @@ class ArticleCreate(BaseModel):
     author: AuthorModel
     publisher: Optional[PublisherModel] = None
     source: Optional[str] = None
-    classification: Optional[ClassificationModel] = None
-    bias: Optional[ClassificationModel] = None
+    publisher_house: Optional[str] = None
+    organizations: List[str] = Field(default_factory=list)
+    think_tanks: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
     engagement: EngagementModel = Field(default_factory=EngagementModel)
     comments: List[CommentModel] = Field(default_factory=list)
@@ -126,12 +124,17 @@ class ArticleUpdate(BaseModel):
     author: Optional[AuthorUpdateModel] = None
     publisher: Optional[PublisherUpdateModel] = None
     source: Optional[str] = None
-    classification: Optional[ClassificationUpdateModel] = None
-    bias: Optional[ClassificationUpdateModel] = None
+    publisher_house: Optional[str] = None
+    organizations: Optional[List[str]] = None
+    think_tanks: Optional[List[str]] = None
     keywords: Optional[List[str]] = None
     engagement: Optional[EngagementUpdateModel] = None
     comments: Optional[List[CommentModel]] = None
     topic_scores: Optional[Dict[str, float]] = None
+
+
+class GraphBootstrapPayload(BaseModel):
+    seed_path: str = "sample_data/allsides_seed_template.csv"
 
 
 def get_collections():
@@ -169,6 +172,9 @@ def ensure_indexes(collections):
     collections["articles"].create_index([("author_id", ASCENDING)])
     collections["articles"].create_index([("publisher_id", ASCENDING)])
     collections["articles"].create_index([("classification.label", ASCENDING)])
+    collections["articles"].create_index([("publisher_house", ASCENDING)])
+    collections["articles"].create_index([("organizations", ASCENDING)])
+    collections["articles"].create_index([("think_tanks", ASCENDING)])
     collections["articles"].create_index([("keywords", ASCENDING)])
     collections["articles"].create_index(
         [("title", TEXT), ("content", TEXT), ("keywords", TEXT)],
@@ -187,7 +193,7 @@ def resolve_author(authors_collection, author: AuthorModel) -> ObjectId:
             "$set": {
                 "name": author.name.strip(),
                 "affiliation": author.affiliation,
-                "aliases": author.aliases,
+                "aliases": normalize_list(author.aliases),
                 "updated_at": now,
             },
             "$setOnInsert": {
@@ -210,7 +216,7 @@ def resolve_publisher(
         name = publisher.name
         website = publisher.website
         country = publisher.country
-        aliases = publisher.aliases
+        aliases = normalize_list(publisher.aliases)
     elif source:
         name = source
         website = None
@@ -242,6 +248,21 @@ def resolve_publisher(
     return publisher_doc["_id"]
 
 
+def build_scoring_context(article_data: Dict[str, Any], author_doc: Dict[str, Any], publisher_doc: Dict[str, Any]):
+    return {
+        "title": article_data.get("title", ""),
+        "content": article_data.get("content", ""),
+        "category": article_data.get("category") or "",
+        "author": (author_doc or {}).get("name", ""),
+        "publisher": (publisher_doc or {}).get("name", ""),
+        "publisher_house": article_data.get("publisher_house") or "",
+        "organizations": article_data.get("organizations") or [],
+        "think_tanks": article_data.get("think_tanks") or [],
+        "keywords": article_data.get("keywords") or [],
+        "topic_scores": article_data.get("topic_scores") or {},
+    }
+
+
 def hydrate_article(doc: Dict[str, Any], collections) -> Dict[str, Any]:
     article = dict(doc)
     author = None
@@ -254,7 +275,7 @@ def hydrate_article(doc: Dict[str, Any], collections) -> Dict[str, Any]:
 
     article["author"] = author or {}
     article["publisher"] = publisher or {}
-    article["source"] = (publisher or {}).get("name")
+    article["source"] = article.get("source") or (publisher or {}).get("name")
     article["bias"] = article.get("classification")
     return to_jsonable(article)
 
@@ -321,35 +342,40 @@ def get_search_query(
     return query
 
 
-def resolve_classification(
-    classification: Optional[ClassificationModel],
-    bias: Optional[ClassificationModel],
-):
-    selected = classification or bias
-    if not selected:
-        return None
-    doc = selected.model_dump(exclude_none=True)
-    doc["predicted_at"] = utc_now()
-    return doc
-
-
-def resolve_classification_update(
-    classification: Optional[ClassificationUpdateModel],
-    bias: Optional[ClassificationUpdateModel],
-    existing: Optional[Dict[str, Any]] = None,
-):
-    incoming = classification or bias
-    if not incoming:
-        return None
-    merged = dict(existing or {})
-    merged.update(incoming.model_dump(exclude_none=True))
-    merged["predicted_at"] = utc_now()
-    return merged
+@app.on_event("shutdown")
+def shutdown_event():
+    kg_scorer.close()
 
 
 @app.get("/")
 def root():
-    return {"message": "Political News Bias API is running"}
+    return {"message": "Political News Bias API is running (graph scoring with optional ML fusion)"}
+
+
+@app.post("/graph/bootstrap")
+def bootstrap_graph(payload: GraphBootstrapPayload):
+    try:
+        stats = kg_scorer.bootstrap_from_csv(payload.seed_path)
+        return {
+            "message": "Neo4j graph schema ensured and seed data loaded",
+            "stats": stats,
+        }
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to bootstrap graph: {exc}")
+
+
+@app.get("/graph/stats")
+def graph_stats():
+    try:
+        return kg_scorer.get_graph_stats()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch graph stats: {exc}")
 
 
 @app.get("/search")
@@ -428,7 +454,13 @@ def read_articles(
                 "bias": "$classification",
             }
         },
-        {"$addFields": {"source": "$publisher.name"}},
+        {
+            "$addFields": {
+                "source": {
+                    "$ifNull": ["$source", "$publisher.name"],
+                }
+            }
+        },
     ]
 
     results = list(collections["articles"].aggregate(pipeline))
@@ -441,18 +473,19 @@ def read_articles(
 def create_article(payload: ArticleCreate):
     collections, client = get_collections()
 
-    classification = resolve_classification(payload.classification, payload.bias)
-    if not classification:
-        client.close()
-        raise HTTPException(
-            status_code=400,
-            detail="classification (or bias) is required with label and confidence",
-        )
-
     author_id = resolve_author(collections["authors"], payload.author)
     publisher_id = resolve_publisher(
         collections["publishers"], publisher=payload.publisher, source=payload.source
     )
+
+    author_doc = collections["authors"].find_one({"_id": author_id})
+    publisher_doc = None
+    if publisher_id:
+        publisher_doc = collections["publishers"].find_one({"_id": publisher_id})
+
+    source_name = payload.source
+    if not source_name and payload.publisher:
+        source_name = payload.publisher.name
 
     now = utc_now()
     article_doc = {
@@ -462,7 +495,10 @@ def create_article(payload: ArticleCreate):
         "category": payload.category,
         "author_id": author_id,
         "publisher_id": publisher_id,
-        "classification": classification,
+        "source": source_name,
+        "publisher_house": payload.publisher_house,
+        "organizations": normalize_list(payload.organizations),
+        "think_tanks": normalize_list(payload.think_tanks),
         "keywords": normalize_keywords(payload.keywords),
         "engagement": payload.engagement.model_dump(),
         "comments": [comment.model_dump() for comment in payload.comments],
@@ -470,6 +506,13 @@ def create_article(payload: ArticleCreate):
         "created_at": now,
         "updated_at": now,
     }
+
+    scoring_context = build_scoring_context(article_doc, author_doc or {}, publisher_doc or {})
+    bias_bundle = kg_scorer.compute_article_bias(scoring_context)
+
+    article_doc["classification"] = bias_bundle["classification"]
+    article_doc["ml_signal"] = bias_bundle["ml_signal"]
+    article_doc["graph_signal"] = bias_bundle["graph_signal"]
 
     result = collections["articles"].insert_one(article_doc)
     article = collections["articles"].find_one({"_id": result.inserted_id})
@@ -501,10 +544,24 @@ def update_article(article_id: str, payload: ArticleUpdate):
 
     set_fields: Dict[str, Any] = {"updated_at": utc_now()}
 
-    direct_fields = ["title", "content", "published_date", "category", "topic_scores"]
+    direct_fields = [
+        "title",
+        "content",
+        "published_date",
+        "category",
+        "source",
+        "publisher_house",
+        "topic_scores",
+    ]
     for field in direct_fields:
         if field in update_data:
             set_fields[field] = update_data[field]
+
+    if "organizations" in update_data:
+        set_fields["organizations"] = normalize_list(update_data["organizations"])
+
+    if "think_tanks" in update_data:
+        set_fields["think_tanks"] = normalize_list(update_data["think_tanks"])
 
     if "keywords" in update_data:
         set_fields["keywords"] = normalize_keywords(update_data["keywords"])
@@ -514,14 +571,6 @@ def update_article(article_id: str, payload: ArticleUpdate):
 
     if "comments" in update_data:
         set_fields["comments"] = update_data["comments"]
-
-    classification_update = resolve_classification_update(
-        payload.classification,
-        payload.bias,
-        existing=article.get("classification"),
-    )
-    if classification_update:
-        set_fields["classification"] = classification_update
 
     if payload.author:
         if not payload.author.name:
@@ -555,6 +604,23 @@ def update_article(article_id: str, payload: ArticleUpdate):
         set_fields["publisher_id"] = resolve_publisher(
             collections["publishers"], publisher=publisher_doc, source=payload.source
         )
+
+    projected = dict(article)
+    projected.update(set_fields)
+
+    author_doc = None
+    if projected.get("author_id"):
+        author_doc = collections["authors"].find_one({"_id": projected["author_id"]})
+
+    publisher_doc = None
+    if projected.get("publisher_id"):
+        publisher_doc = collections["publishers"].find_one({"_id": projected["publisher_id"]})
+
+    scoring_context = build_scoring_context(projected, author_doc or {}, publisher_doc or {})
+    bias_bundle = kg_scorer.compute_article_bias(scoring_context)
+    set_fields["classification"] = bias_bundle["classification"]
+    set_fields["ml_signal"] = bias_bundle["ml_signal"]
+    set_fields["graph_signal"] = bias_bundle["graph_signal"]
 
     collections["articles"].update_one({"_id": object_id}, {"$set": set_fields})
 
