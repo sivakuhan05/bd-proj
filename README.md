@@ -68,13 +68,14 @@ ENABLE_SPARK_ML=true
 HYBRID_ML_WEIGHT=0.7
 HYBRID_GRAPH_WEIGHT=0.3
 INTERNAL_ML_MODEL_VERSION=internal-lexical-v1
+R_SCRIPT_BIN=Rscript
 ```
 
 Notes:
 - Keep `ENABLE_ML_MODEL=false` for graph-only output now.
 - When your real ML model is ready, set `ENABLE_ML_MODEL=true`.
-- `ENABLE_SPARK_ML=true` lets the ML signal use a local Spark session when ML mode is enabled.
-- If Spark is unavailable at runtime, the backend falls back to the existing lexical scorer automatically.
+- `ENABLE_SPARK_ML=true` lets the ML signal use a local Spark session through R (`sparklyr`) when ML mode is enabled.
+- If R/Spark is unavailable at runtime, the backend falls back to the existing lexical scorer automatically.
 
 ## Run
 
@@ -90,15 +91,62 @@ Frontend:
 streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-## Spark Analytics Demo
+## R + Spark Setup
 
-To demonstrate Spark without changing the app workflow, run the standalone analytics job after you have uploaded a few articles.
+The app itself is still Python, but the Spark pieces now run through R.
 
-Install dependencies:
+Install these system tools:
+
+1. Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+2. R:
+- Install R on your machine so `Rscript` is available on your PATH.
+
+3. Java:
+- Install Java 11 or newer.
+- Confirm with:
+
+```bash
+java -version
+Rscript --version
+```
+
+4. R packages and local Spark runtime:
+
+```bash
+export R_LIBS_USER=~/R/library
+export SPARK_VERSION=3.5.1
+Rscript backend/spark_jobs/install_packages.R
+```
+
+Optional:
+- If `Rscript` is not on your PATH, set `R_SCRIPT_BIN` in `.env` to the full executable path.
+- If you want a different Spark build for `sparklyr`, set `SPARK_VERSION` before running the installer.
+
+Troubleshooting on Ubuntu:
+- If you see package build errors for `curl`, `xml2`, `openssl`, or `httr`, install:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev
+```
+
+- If you see `Java 11 is only supported for Spark 3.0.0+`, you are pointing to an old Spark runtime.
+  Reinstall Spark 3.5.1 for `sparklyr`:
+
+```bash
+export R_LIBS_USER=~/R/library
+export SPARK_VERSION=3.5.1
+Rscript backend/spark_jobs/install_packages.R
+```
+
+## Spark Analytics Demo
+
+To demonstrate Spark without changing the app workflow, run the standalone analytics job after you have uploaded a few articles.
 
 Run the Spark job:
 
@@ -108,7 +156,7 @@ python3 -m backend.spark_jobs.article_analytics --limit 1000 --save-source-json
 
 What it does:
 - Reads article data from the existing MongoDB collections.
-- Builds a Spark DataFrame from the stored articles.
+- Hands the dataset to an R `sparklyr` job and builds Spark DataFrames there.
 - Prints analytics such as publisher counts, category counts, bias distribution, average engagement, and top keywords.
 - Writes CSV reports under `sample_data/spark_reports/`.
 

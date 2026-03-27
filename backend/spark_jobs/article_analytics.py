@@ -1,19 +1,15 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List
 
 from bson import ObjectId
 from dotenv import load_dotenv
 from pymongo import MongoClient
-
-try:
-    from pyspark.sql import SparkSession
-    from pyspark.sql import functions as F
-except Exception:  # pragma: no cover - pyspark is optional at runtime
-    SparkSession = None
-    F = None
 
 
 def to_jsonable(value: Any) -> Any:
@@ -28,7 +24,7 @@ def to_jsonable(value: Any) -> Any:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Spark analytics on political news articles stored in MongoDB."
+        description="Run Spark analytics on political news articles stored in MongoDB using R."
     )
     parser.add_argument(
         "--limit",
@@ -112,110 +108,66 @@ def load_article_rows(limit: int) -> List[Dict[str, Any]]:
     return rows
 
 
-def ensure_spark() -> "SparkSession":
-    if SparkSession is None:
+def ensure_rscript() -> tuple[str, Path]:
+    rscript_bin = os.getenv("R_SCRIPT_BIN", "Rscript")
+    if shutil.which(rscript_bin) is None:
         raise RuntimeError(
-            "pyspark is not installed. Run `pip install -r requirements.txt` first."
+            f"{rscript_bin} was not found on PATH. Install R first, then rerun this command."
         )
-    spark = (
-        SparkSession.builder.master(os.getenv("SPARK_MASTER", "local[*]"))
-        .appName(os.getenv("SPARK_APP_NAME", "PoliticalNewsAnalytics"))
-        .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "1g"))
-        .config("spark.ui.showConsoleProgress", "false")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
-    return spark
+
+    script_path = Path(__file__).with_name("article_analytics.R")
+    if not script_path.exists():
+        raise RuntimeError(f"R analytics script not found: {script_path}")
+
+    return rscript_bin, script_path
 
 
-def show_table(title: str, dataframe, num_rows: int = 20) -> None:
-    print(f"\n=== {title} ===")
-    dataframe.show(num_rows, truncate=False)
-
-
-def write_report(dataframe, output_dir: Path, name: str) -> None:
-    target = output_dir / name
-    dataframe.coalesce(1).write.mode("overwrite").option("header", True).csv(str(target))
-
-
-def run_analytics(rows: Iterable[Dict[str, Any]], output_dir: Path, save_source_json: bool) -> None:
-    spark = ensure_spark()
-    rows = list(rows)
+def run_analytics(rows: List[Dict[str, Any]], output_dir: Path, save_source_json: bool) -> None:
     if not rows:
-        spark.stop()
         raise RuntimeError("No articles found to analyze. Upload a few articles first.")
 
+    rscript_bin, script_path = ensure_rscript()
     output_dir.mkdir(parents=True, exist_ok=True)
-    if save_source_json:
-        source_path = output_dir / "flattened_articles.jsonl"
-        with source_path.open("w", encoding="utf-8") as handle:
+
+    input_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as handle:
+            input_path = handle.name
             for row in rows:
                 handle.write(json.dumps(to_jsonable(row), ensure_ascii=True) + "\n")
 
-    df = spark.createDataFrame(rows)
-    keyword_df = df.select(F.explode_outer("keywords").alias("keyword")).where(
-        F.col("keyword").isNotNull() & (F.trim(F.col("keyword")) != "")
-    )
+        if save_source_json:
+            source_path = output_dir / "flattened_articles.jsonl"
+            with source_path.open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(to_jsonable(row), ensure_ascii=True) + "\n")
 
-    publisher_counts = (
-        df.groupBy("publisher_name")
-        .agg(F.count("*").alias("article_count"))
-        .orderBy(F.desc("article_count"), F.asc("publisher_name"))
-    )
-    category_counts = (
-        df.groupBy("category")
-        .agg(F.count("*").alias("article_count"))
-        .orderBy(F.desc("article_count"), F.asc("category"))
-    )
-    bias_distribution = (
-        df.groupBy("bias_label")
-        .agg(F.count("*").alias("article_count"))
-        .orderBy(F.desc("article_count"), F.asc("bias_label"))
-    )
-    engagement_by_category = (
-        df.groupBy("category")
-        .agg(
-            F.round(F.avg("views"), 2).alias("avg_views"),
-            F.round(F.avg("likes"), 2).alias("avg_likes"),
-            F.round(F.avg("shares"), 2).alias("avg_shares"),
+        result = subprocess.run(
+            [
+                rscript_bin,
+                str(script_path),
+                "--input-jsonl",
+                input_path,
+                "--output-dir",
+                str(output_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
-        .orderBy(F.desc("avg_views"), F.asc("category"))
-    )
-    top_keywords = (
-        keyword_df.groupBy("keyword")
-        .agg(F.count("*").alias("keyword_count"))
-        .orderBy(F.desc("keyword_count"), F.asc("keyword"))
-    )
-    publisher_bias = (
-        df.groupBy("publisher_name", "bias_label")
-        .agg(F.count("*").alias("article_count"))
-        .orderBy(F.asc("publisher_name"), F.desc("article_count"), F.asc("bias_label"))
-    )
-    article_size = df.select(
-        F.count("*").alias("total_articles"),
-        F.round(F.avg("content_length"), 2).alias("avg_content_length"),
-        F.max("content_length").alias("max_content_length"),
-        F.round(F.avg("graph_confidence"), 4).alias("avg_graph_confidence"),
-    )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(message or "R Spark analytics job failed.")
 
-    show_table("Publisher Article Counts", publisher_counts)
-    show_table("Category Article Counts", category_counts)
-    show_table("Bias Distribution", bias_distribution)
-    show_table("Average Engagement By Category", engagement_by_category)
-    show_table("Top Keywords", top_keywords)
-    show_table("Publisher vs Bias Label", publisher_bias)
-    show_table("Dataset Summary", article_size, num_rows=5)
+        if result.stdout.strip():
+            print(result.stdout.strip())
 
-    write_report(publisher_counts, output_dir, "publisher_counts")
-    write_report(category_counts, output_dir, "category_counts")
-    write_report(bias_distribution, output_dir, "bias_distribution")
-    write_report(engagement_by_category, output_dir, "engagement_by_category")
-    write_report(top_keywords, output_dir, "top_keywords")
-    write_report(publisher_bias, output_dir, "publisher_bias")
-    write_report(article_size, output_dir, "dataset_summary")
-
-    print(f"\nSpark analytics reports written to: {output_dir}")
-    spark.stop()
+        print(f"\nSpark analytics reports written to: {output_dir}")
+    finally:
+        if input_path and os.path.exists(input_path):
+            os.unlink(input_path)
 
 
 def main() -> None:
